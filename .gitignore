@@ -1,0 +1,21 @@
+# Enunciado do desafio (documento interno da empresa)
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Ambiente
+.env
+
+# SO / editor
+.DS_Store
+.idea/
+.vscode/
