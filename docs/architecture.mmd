@@ -1,0 +1,42 @@
+flowchart TB
+    Client([Cliente])
+
+    subgraph App["Aplicação (hexagonal — processos independentes, escala horizontal)"]
+        direction LR
+        API["API FastAPI<br/>(stateless, N réplicas)"]
+        Relay["Outbox Relay<br/>(poller ~1s, SKIP LOCKED)"]
+        Consumer["Consumer<br/>(grupo transaction-processor,<br/>até 6 réplicas)"]
+    end
+
+    subgraph Storage["Persistência"]
+        direction LR
+        MySQL[("MySQL<br/>transactions + outbox")]
+        Redis[("Redis — cache do GET<br/>TTL 60s, fail-open")]
+    end
+
+    subgraph Kafka["Kafka"]
+        direction LR
+        Main[["transaction-events<br/>6 partições, key=transaction_id"]]
+        Retry[["transaction-events.retry<br/>headers: attempts, not_before"]]
+        DLQ[["transaction-events.dlq"]]
+    end
+
+    Risk["Serviço de Análise de Risco<br/>(externo — mockado)"]
+    Others["Outros sistemas<br/>(consomem status_changed)"]
+
+    Client -->|"POST /transactions<br/>GET /transactions/{id}"| API
+    API -->|"(1) INSERT tx PENDING + evento<br/>outbox na MESMA transação"| MySQL
+    API <-->|"(7) cache read-through"| Redis
+
+    Relay -->|"(2) lê não publicados"| MySQL
+    Relay -->|"(3) publica"| Main
+
+    Main -->|"(4) consome, commit manual<br/>de offset após processar"| Consumer
+    Retry -->|"reconsome após not_before<br/>(pausa da partição)"| Consumer
+    Consumer -->|"(5) timeout + retry exponencial<br/>+ circuit breaker"| Risk
+    Consumer -->|"(6) UPDATE condicional de status +<br/>evento status_changed no outbox;<br/>invalida cache"| Storage
+
+    Consumer -->|"falha transitória"| Retry
+    Consumer -->|"esgotou tentativas ou<br/>falha permanente → FAILED"| DLQ
+    DLQ -.->|"CLI reprocess_dlq"| Main
+    Main -.->|"status_changed"| Others
