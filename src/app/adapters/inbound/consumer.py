@@ -107,18 +107,18 @@ class KafkaConsumerLoop:
         logger.info("consumer.started", topics=topics)
         try:
             while self._running:
-                self._resume_due_partitions()
+                self.resume_due_partitions()
                 msg = self._consumer.poll(1.0)
                 if msg is None:
                     continue
                 if msg.error():
                     logger.error("consumer.kafka_error", error=str(msg.error()))
                     continue
-                self._handle(msg)
+                self.process_message(msg)
         finally:
             self._consumer.close()
 
-    def _handle(self, msg) -> None:
+    def process_message(self, msg) -> None:
         headers = {k: v for k, v in (msg.headers() or [])}
         not_before = headers.get(NOT_BEFORE_HEADER)
         if not_before is not None and float(not_before) > self._now():
@@ -132,7 +132,7 @@ class KafkaConsumerLoop:
         self._handler.handle(value=msg.value(), headers=headers, key=msg.key())
         self._consumer.commit(message=msg, asynchronous=False)
 
-    def _resume_due_partitions(self) -> None:
+    def resume_due_partitions(self) -> None:
         now = self._now()
         due = [k for k, (_, resume_at) in self._paused.items() if resume_at <= now]
         for k in due:
