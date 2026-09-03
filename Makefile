@@ -1,4 +1,4 @@
-.PHONY: up down logs test test-integration test-e2e scale-consumers reprocess-dlq
+.PHONY: up down logs test coverage test-integration test-e2e scale-consumers reprocess-dlq
 
 up:
 	docker compose up -d --build
@@ -11,6 +11,9 @@ logs:
 
 test:
 	.venv/bin/pytest tests/unit -v
+
+coverage:
+	.venv/bin/pytest tests/unit --cov=src --cov=mock_risk_service --cov-report=term-missing
 
 test-integration:
 	.venv/bin/pytest tests/integration -v -m integration
