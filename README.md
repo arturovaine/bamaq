@@ -9,14 +9,70 @@ retry com backoff, circuit breaker, DLQ com reprocessamento e observabilidade.
 
 *(Fonte do diagrama: [`docs/architecture.mmd`](docs/architecture.mmd); versão vetorial em [`docs/architecture.svg`](docs/architecture.svg))*
 
-## Como executar
+<details open>
+<summary><strong>⚙️ Como a aplicação funciona</strong></summary>
 
-Pré-requisitos: Docker + Docker Compose. Para os testes locais: Python 3.12.
+O ciclo de vida de uma transação, do POST à notificação:
+
+1. **Criação** — `POST /transactions` valida a entrada, gera um UUID e, **em uma única
+   transação MySQL**, persiste a transação com status `PENDING` e grava o evento
+   `transaction.created` na tabela `outbox`. Responde `202 Accepted`. A API nunca fala
+   com o Kafka — se o Kafka estiver fora, nada muda para o cliente.
+2. **Publicação** — o processo **outbox relay** faz polling da tabela `outbox` (~1s,
+   `FOR UPDATE SKIP LOCKED`, o que permite múltiplas réplicas) e publica os eventos
+   pendentes no tópico Kafka `transactions`, com `key = transaction_id` (preserva a
+   ordem por transação).
+3. **Processamento** — o **consumer** recebe o evento, move o status para `PROCESSING`
+   e chama `POST /risk-analysis` no serviço de risco (timeout 2s, até 3 retries
+   in-process com backoff + jitter, atrás de um circuit breaker).
+4. **Desfecho** — com a resposta (`APPROVED`/`REJECTED`), o consumer aplica um
+   `UPDATE ... WHERE status = 'PROCESSING'` (condicional — duplicatas e corridas não
+   corrompem estado), grava o evento `transaction.status_changed` na outbox (é assim
+   que outros sistemas são notificados) e invalida o cache Redis.
+5. **Falhas** — falha temporária do serviço de risco envia a mensagem ao tópico
+   `transactions.retry` com backoff exponencial (headers `attempts`/`not_before`);
+   após 5 tentativas totais — ou em falha permanente (4xx, payload inválido) — a
+   mensagem vai à **DLQ** e a transação é marcada `FAILED`. `make reprocess-dlq`
+   devolve as mensagens da DLQ ao fluxo.
+6. **Consulta** — `GET /transactions/{id}` lê de um cache Redis read-through
+   (TTL 60s, fail-open: Redis fora vira cache miss, nunca erro) com fallback no MySQL.
+   Id inexistente → `404`.
+
+**Estados da transação:**
+
+```
+PENDING ──► PROCESSING ──► APPROVED
+   │             ├───────► REJECTED
+   └─────────────┴───────► FAILED   (esgotou tentativas; reprocessável via DLQ)
+```
+
+</details>
+
+<details open>
+<summary><strong>🚀 Como executar (Docker Compose)</strong></summary>
+
+Pré-requisito: Docker + Docker Compose.
 
 ```bash
-# sobe tudo: MySQL, Kafka (KRaft), Redis, API, consumer, outbox relay e mock de risco
 make up            # ou: docker compose up -d --build
+```
 
+Isso constrói e sobe a stack completa. Os jobs one-shot `migrate` (migrações Alembic)
+e `kafka-init` (criação dos tópicos) rodam antes de API/consumer/relay iniciarem:
+
+| Serviço | Porta (host) | Papel |
+|---|---|---|
+| `api` | `8000` | REST: `POST/GET /transactions`, `/health`, `/metrics` |
+| `risk-mock` | `8081` | Mock do serviço de análise de risco (+ `/control`) |
+| `consumer` | — | Processa eventos; métricas em `:9101` (interno à rede) |
+| `outbox-relay` | — | Publica eventos da outbox no Kafka |
+| `mysql` | `3306` | Persistência (transações + outbox) |
+| `kafka` | `29092` | Mensageria (KRaft, sem ZooKeeper) |
+| `redis` | `6379` | Cache read-through do GET |
+
+**Usando a API:**
+
+```bash
 # criar uma transação
 curl -s -X POST localhost:8000/transactions \
   -H 'Content-Type: application/json' \
@@ -38,25 +94,32 @@ curl -X POST localhost:8081/control -d '{"latency_seconds": 5}' -H 'Content-Type
 curl -X POST localhost:8081/control -d '{"mode": "normal", "latency_seconds": 0}' -H 'Content-Type: application/json'
 ```
 
-Testes:
-
-```bash
-python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-make test              # unitários (59) — não requerem infraestrutura
-make test-integration  # repositórios contra o MySQL do compose
-make test-e2e          # fluxo completo contra a stack do compose
-```
-
-Operação:
+**Operação:**
 
 ```bash
 make scale-consumers   # escala o consumer para 3 réplicas
 make reprocess-dlq     # republica mensagens da DLQ no tópico principal
 make logs              # logs (JSON estruturado) de api/consumer/outbox-relay
-curl -s localhost:8000/metrics  # métricas Prometheus
+make down              # derruba tudo (incluindo volumes)
+
+curl -s localhost:8000/metrics                                   # métricas da API
+docker compose exec consumer curl -s localhost:9101/metrics      # métricas do consumer
 ```
 
-## Arquitetura
+**Testes** (requer Python 3.12 local):
+
+```bash
+python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+make test              # unitários (87) — não requerem infraestrutura
+make coverage          # unitários com relatório de cobertura (falha abaixo de 85%)
+make test-integration  # repositórios contra o MySQL do compose (requer make up)
+make test-e2e          # fluxo completo contra a stack do compose (requer make up)
+```
+
+</details>
+
+<details>
+<summary><strong>🏛️ Arquitetura</strong></summary>
 
 **Hexagonal (Ports and Adapters).** O core (`src/app/domain` + `src/app/application`)
 não importa nada de infraestrutura; Kafka, MySQL, Redis, httpx e FastAPI são adapters
@@ -76,18 +139,14 @@ src/app/
 Três processos independentes (API, consumer, outbox relay) compartilham o mesmo
 pacote e escalam separadamente.
 
-**Estados da transação:**
+Transições de estado são validadas no domínio e aplicadas com
+`UPDATE ... WHERE status = <esperado>` (condicional): duplicatas e corridas não
+corrompem estado.
 
-```
-PENDING ──► PROCESSING ──► APPROVED
-   │             ├───────► REJECTED
-   └─────────────┴───────► FAILED   (esgotou tentativas; reprocessável via DLQ)
-```
+</details>
 
-Transições são validadas no domínio e aplicadas com `UPDATE ... WHERE status = <esperado>`
-(condicional): duplicatas e corridas não corrompem estado.
-
-## Decisões e trade-offs
+<details>
+<summary><strong>⚖️ Decisões e trade-offs</strong></summary>
 
 | Decisão | Alternativa | Por quê |
 |---|---|---|
@@ -101,7 +160,10 @@ Transições são validadas no domínio e aplicadas com `UPDATE ... WHERE status
 | **`enable.idempotence=true` no producer** | default | Elimina duplicatas do produtor em retries de rede — barato e sem downside. |
 | **Flush síncrono no caminho retry/DLQ** | Batch | O offset só pode ser commitado após durabilidade do reenvio; volume desse caminho é baixo. |
 
-## Cenários de falha (Parte 1)
+</details>
+
+<details>
+<summary><strong>💥 Cenários de falha (Parte 1)</strong></summary>
 
 | Cenário | Como a arquitetura responde |
 |---|---|
@@ -111,7 +173,10 @@ Transições são validadas no domínio e aplicadas com `UPDATE ... WHERE status
 | **4. Mensagem duplicada** | Idempotência por estado: estados terminais são ignorados com ACK; a transição final é um UPDATE condicional — só um vencedor. Duplicatas do produtor são suprimidas por `enable.idempotence`. |
 | **5. 100 → 10.000 eventos/min (100×)** | 10k/min ≈ 167/s. Tópico com 6 partições → até 6 consumers em paralelo (`make scale-consumers`); key=`transaction_id` preserva ordem por transação. API stateless escala atrás de load balancer. O gargalo seguinte é o MySQL (ver Limitações). |
 
-## Confiabilidade
+</details>
+
+<details>
+<summary><strong>🛡️ Confiabilidade</strong></summary>
 
 - **Consistência DB↔mensageria:** outbox transacional; relay at-least-once; consumers idempotentes absorvem duplicatas.
 - **Ordenação:** partição por `transaction_id` garante ordem por agregado no tópico principal.
@@ -119,31 +184,50 @@ Transições são validadas no domínio e aplicadas com `UPDATE ... WHERE status
 - **DLQ:** mensagens esgotadas ou com falha permanente (4xx, payload inválido) + transação marcada `FAILED`; CLI `reprocess_dlq` devolve ao fluxo com contador zerado.
 - **Versionamento de eventos:** envelope `{event_id, event_type, version, occurred_at, payload}`. Campos novos = mesma versão (consumers ignoram campos desconhecidos); mudança breaking = bump de `version` e consumo condicional durante a transição.
 
-## Observabilidade
+</details>
+
+<details>
+<summary><strong>🔭 Observabilidade</strong></summary>
 
 - Logs **JSON estruturados** (structlog) em todos os processos, sempre com
   `transaction_id` (e `event_type`, tentativa, motivo da falha quando aplicável).
 - Falhas relevantes logadas com contexto: retry agendado, tentativas esgotadas,
   circuito aberto/fechado, mensagem imparseável, ciclo do relay com erro.
 - Métricas Prometheus: API em `GET :8000/metrics` (`transactions_created_total`);
-  consumer em `:9101/metrics` (`transactions_processed_total{outcome}`,
-  `risk_analysis_seconds`).
+  consumer em `:9101/metrics`, interno à rede do compose — a porta não é publicada
+  no host para permitir `--scale consumer=3` sem conflito
+  (`docker compose exec consumer curl -s localhost:9101/metrics`). Métricas:
+  `transactions_processed_total{outcome}`, `risk_analysis_seconds`.
 
-## Estratégia de testes
+</details>
+
+<details>
+<summary><strong>🧪 Estratégia de testes</strong></summary>
 
 | Camada | O que cobre | Dependências |
 |---|---|---|
-| **Unitários (59)** | Domínio (transições), use cases com fakes das ports (sucesso, duplicado, corrida, indisponibilidade), circuit breaker (clock fake), handler do consumer (retry/DLQ/poison), cliente de risco (httpx MockTransport), API (TestClient), cache fail-open | Nenhuma |
+| **Unitários (87)** | Domínio (transições), use cases com fakes das ports (sucesso, duplicado, corrida, indisponibilidade), circuit breaker (clock fake), handler e loop do consumer (retry/DLQ/poison, pausa/retomada de partição), cliente de risco (httpx MockTransport), API (TestClient), cache fail-open, adapters SQLAlchemy (SQLite em memória), publisher Kafka (producer fake), wiring dos 4 entrypoints, settings/logging/clock | Nenhuma |
 | **Integração (3)** | Repositórios SQLAlchemy contra MySQL real: roundtrip, semântica do UPDATE condicional, fetch/mark do outbox | `make up` |
 | **E2E (4)** | Aprovação, rejeição, **outage temporário com recuperação via retry**, 404 | `make up` |
 
-Os casos pedidos no enunciado: fluxo de sucesso (unit+e2e), processamento duplicado
-(unit: `test_terminal_transaction_is_skipped_idempotently`), falha temporária
-(unit: `test_transient_5xx_is_retried_until_success`; e2e: `test_temporary_risk_outage_recovers`),
-falha definitiva (unit: `test_retry_exhaustion_goes_to_dlq_and_marks_failed`),
-consulta inexistente (unit+e2e).
+**Cobertura: 98%** nos unitários (`make coverage`); o CI falha abaixo de 85%
+(`fail_under` no `pyproject.toml`). Os pontos cegos restantes são ramos de erro
+de wiring, cobertos indiretamente pelos testes e2e.
 
-## Limitações conhecidas
+**Casos exigidos no enunciado → testes:**
+
+| Caso do enunciado | Teste |
+|---|---|
+| Fluxo de sucesso | unit: `test_happy_path_processes_created_event`; e2e: aprovação/rejeição |
+| Processamento duplicado | unit: `test_terminal_transaction_is_skipped_idempotently` |
+| Falha temporária do serviço externo | unit: `test_transient_5xx_is_retried_until_success`; e2e: `test_temporary_risk_outage_recovers` |
+| Falha definitiva após múltiplas tentativas | unit: `test_retry_exhaustion_goes_to_dlq_and_marks_failed` |
+| Consulta de transação inexistente | unit: `test_get_unknown_returns_404`; e2e: `test_unknown_transaction_is_404` |
+
+</details>
+
+<details>
+<summary><strong>⚠️ Limitações conhecidas</strong></summary>
 
 1. **Latência do poller (~1s)** e carga de SELECT no MySQL; em volume alto, o próximo passo seria CDC (Debezium).
 2. **MySQL é o primeiro gargalo em 10k/min** (escritas de status + outbox). Evolução: read replicas para o GET, particionamento/arquivamento do outbox, batch de `mark_published`.
@@ -154,6 +238,11 @@ consulta inexistente (unit+e2e).
 7. **Mock de risco** não simula todos os comportamentos de um serviço real (rate limit, respostas parciais, jitter de rede).
 8. **Observabilidade sem tracing distribuído** — OpenTelemetry seria o próximo incremento natural.
 
-## Documentos do processo
+</details>
+
+<details>
+<summary><strong>📄 Documentos do processo</strong></summary>
 
 
+
+</details>
