@@ -9,8 +9,29 @@ retry com backoff, circuit breaker, DLQ com reprocessamento e observabilidade.
 
 *(Fonte do diagrama: [`docs/architecture.mmd`](docs/architecture.mmd); versão vetorial em [`docs/architecture.svg`](docs/architecture.svg))*
 
+## Quick start
+
+Pré-requisito: Docker + Docker Compose.
+
+```bash
+make up            # sobe MySQL, Kafka, Redis, API, consumer, outbox relay e mock de risco
+
+# criar uma transação
+curl -s -X POST localhost:8000/transactions \
+  -H 'Content-Type: application/json' \
+  -d '{"customer_id": "123", "value": 1500.00}'
+# → 202 {"id": "<uuid>", "status": "PENDING", ...}
+
+# consultar (após ~2s o status terá progredido)
+curl -s localhost:8000/transactions/<uuid>
+# → 200 {"status": "APPROVED", ...}
+```
+
+Tabela de serviços/portas, modos de falha do mock, operação e testes na seção
+"Como executar" abaixo.
+
 <details open>
-<summary><strong>⚙️ Como a aplicação funciona</strong></summary>
+<summary><strong>Como a aplicação funciona</strong></summary>
 
 O ciclo de vida de uma transação, do POST à notificação:
 
@@ -49,7 +70,7 @@ PENDING ──► PROCESSING ──► APPROVED
 </details>
 
 <details open>
-<summary><strong>🚀 Como executar (Docker Compose)</strong></summary>
+<summary><strong>Como executar (Docker Compose)</strong></summary>
 
 Pré-requisito: Docker + Docker Compose.
 
@@ -119,7 +140,7 @@ make test-e2e          # fluxo completo contra a stack do compose (requer make u
 </details>
 
 <details>
-<summary><strong>🏛️ Arquitetura</strong></summary>
+<summary><strong>Arquitetura</strong></summary>
 
 **Hexagonal (Ports and Adapters).** O core (`src/app/domain` + `src/app/application`)
 não importa nada de infraestrutura; Kafka, MySQL, Redis, httpx e FastAPI são adapters
@@ -146,7 +167,7 @@ corrompem estado.
 </details>
 
 <details>
-<summary><strong>⚖️ Decisões e trade-offs</strong></summary>
+<summary><strong>Decisões e trade-offs</strong></summary>
 
 | Decisão | Alternativa | Por quê |
 |---|---|---|
@@ -163,7 +184,7 @@ corrompem estado.
 </details>
 
 <details>
-<summary><strong>💥 Cenários de falha (Parte 1)</strong></summary>
+<summary><strong>Cenários de falha (Parte 1)</strong></summary>
 
 | Cenário | Como a arquitetura responde |
 |---|---|
@@ -176,7 +197,7 @@ corrompem estado.
 </details>
 
 <details>
-<summary><strong>🛡️ Confiabilidade</strong></summary>
+<summary><strong>Confiabilidade</strong></summary>
 
 - **Consistência DB↔mensageria:** outbox transacional; relay at-least-once; consumers idempotentes absorvem duplicatas.
 - **Ordenação:** partição por `transaction_id` garante ordem por agregado no tópico principal.
@@ -187,7 +208,7 @@ corrompem estado.
 </details>
 
 <details>
-<summary><strong>🔭 Observabilidade</strong></summary>
+<summary><strong>Observabilidade</strong></summary>
 
 - Logs **JSON estruturados** (structlog) em todos os processos, sempre com
   `transaction_id` (e `event_type`, tentativa, motivo da falha quando aplicável).
@@ -202,7 +223,7 @@ corrompem estado.
 </details>
 
 <details>
-<summary><strong>🧪 Estratégia de testes</strong></summary>
+<summary><strong>Estratégia de testes</strong></summary>
 
 | Camada | O que cobre | Dependências |
 |---|---|---|
@@ -227,7 +248,7 @@ de wiring, cobertos indiretamente pelos testes e2e.
 </details>
 
 <details>
-<summary><strong>⚠️ Limitações conhecidas</strong></summary>
+<summary><strong>Limitações conhecidas</strong></summary>
 
 1. **Latência do poller (~1s)** e carga de SELECT no MySQL; em volume alto, o próximo passo seria CDC (Debezium).
 2. **MySQL é o primeiro gargalo em 10k/min** (escritas de status + outbox). Evolução: read replicas para o GET, particionamento/arquivamento do outbox, batch de `mark_published`.
@@ -241,7 +262,7 @@ de wiring, cobertos indiretamente pelos testes e2e.
 </details>
 
 <details>
-<summary><strong>📄 Documentos do processo</strong></summary>
+<summary><strong>Documentos do processo</strong></summary>
 
 
 
