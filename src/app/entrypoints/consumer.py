@@ -1,6 +1,7 @@
 import signal
 
 from confluent_kafka import Consumer
+from prometheus_client import start_http_server
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -18,6 +19,7 @@ from app.settings import Settings
 def main() -> None:
     configure_logging()
     settings = Settings()
+    start_http_server(9101)  # métricas Prometheus do processo consumer
     engine = create_engine(settings.database_url, pool_pre_ping=True, pool_recycle=3600)
     session_factory = sessionmaker(engine)
 

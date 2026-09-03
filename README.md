@@ -125,8 +125,9 @@ Transições são validadas no domínio e aplicadas com `UPDATE ... WHERE status
   `transaction_id` (e `event_type`, tentativa, motivo da falha quando aplicável).
 - Falhas relevantes logadas com contexto: retry agendado, tentativas esgotadas,
   circuito aberto/fechado, mensagem imparseável, ciclo do relay com erro.
-- Métricas Prometheus em `GET /metrics`: `transactions_created_total`,
-  `transactions_processed_total{outcome}`, `risk_analysis_seconds` (histograma).
+- Métricas Prometheus: API em `GET :8000/metrics` (`transactions_created_total`);
+  consumer em `:9101/metrics` (`transactions_processed_total{outcome}`,
+  `risk_analysis_seconds`).
 
 ## Estratégia de testes
 
