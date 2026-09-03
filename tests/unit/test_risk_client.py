@@ -25,7 +25,7 @@ def test_approved():
     analyzer = make_analyzer(
         lambda req: httpx.Response(200, json={"result": "APPROVED"})
     )
-    assert analyzer.analyze("123", Decimal("10")) is RiskDecision.APPROVED
+    assert analyzer.analyze("123", Decimal(10)) is RiskDecision.APPROVED
 
 
 def test_transient_5xx_is_retried_until_success():
@@ -37,7 +37,7 @@ def test_transient_5xx_is_retried_until_success():
             return httpx.Response(503)
         return httpx.Response(200, json={"result": "REJECTED"})
 
-    assert make_analyzer(handler).analyze("123", Decimal("10")) is RiskDecision.REJECTED
+    assert make_analyzer(handler).analyze("123", Decimal(10)) is RiskDecision.REJECTED
     assert len(calls) == 3
 
 
@@ -46,13 +46,13 @@ def test_exhausted_retries_raise_unavailable():
         raise httpx.ConnectError("down")
 
     with pytest.raises(RiskAnalysisUnavailable):
-        make_analyzer(handler).analyze("123", Decimal("10"))
+        make_analyzer(handler).analyze("123", Decimal(10))
 
 
 def test_4xx_is_permanent():
     analyzer = make_analyzer(lambda req: httpx.Response(422, json={}))
     with pytest.raises(RiskAnalysisPermanentError):
-        analyzer.analyze("123", Decimal("10"))
+        analyzer.analyze("123", Decimal(10))
 
 
 def test_invalid_body_is_permanent():
@@ -60,7 +60,7 @@ def test_invalid_body_is_permanent():
         lambda req: httpx.Response(200, json={"result": "BANANA"})
     )
     with pytest.raises(RiskAnalysisPermanentError):
-        analyzer.analyze("123", Decimal("10"))
+        analyzer.analyze("123", Decimal(10))
 
 
 def test_open_circuit_short_circuits_as_unavailable():
@@ -73,8 +73,8 @@ def test_open_circuit_short_circuits_as_unavailable():
 
     analyzer = make_analyzer(handler, breaker=breaker, attempts=1)
     with pytest.raises(RiskAnalysisUnavailable):
-        analyzer.analyze("123", Decimal("10"))
+        analyzer.analyze("123", Decimal(10))
     n = len(calls)
     with pytest.raises(RiskAnalysisUnavailable):
-        analyzer.analyze("123", Decimal("10"))
+        analyzer.analyze("123", Decimal(10))
     assert len(calls) == n  # circuito aberto: serviço não foi chamado de novo

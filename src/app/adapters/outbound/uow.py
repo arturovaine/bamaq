@@ -1,7 +1,8 @@
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.outbound.repositories import (
-    SqlAlchemyOutboxRepository, SqlAlchemyTransactionRepository,
+    SqlAlchemyOutboxRepository,
+    SqlAlchemyTransactionRepository,
 )
 
 

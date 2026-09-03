@@ -1,7 +1,9 @@
 import json
 
 from app.adapters.inbound.consumer import (
-    ATTEMPTS_HEADER, NOT_BEFORE_HEADER, MessageHandler,
+    ATTEMPTS_HEADER,
+    NOT_BEFORE_HEADER,
+    MessageHandler,
 )
 from app.application.errors import RiskAnalysisPermanentError, RiskAnalysisUnavailable
 from app.application.use_cases.process_transaction import ProcessOutcome
@@ -71,7 +73,7 @@ def test_transient_failure_schedules_retry_with_backoff():
     sink = FakeSink()
     process = FakeProcess(error=RiskAnalysisUnavailable("down"))
     make_handler(process, sink=sink).handle(value=envelope(), headers={}, key=b"tx-1")
-    topic, key, value, headers = sink.sent[0]
+    topic, _key, _value, headers = sink.sent[0]
     assert topic == "t.retry"
     assert headers[ATTEMPTS_HEADER] == b"1"
     assert float(headers[NOT_BEFORE_HEADER]) == 1000.0 + 2.0  # base * 2**0

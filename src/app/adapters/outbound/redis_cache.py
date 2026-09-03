@@ -20,18 +20,18 @@ class RedisCache:
     def get(self, key: str) -> str | None:
         try:
             return self._client.get(key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — fail-open é o contrato deste adapter
             logger.warning("cache.get_failed", key=key, error=str(exc))
             return None
 
     def set(self, key: str, value: str, ttl_seconds: int) -> None:
         try:
             self._client.set(key, value, ex=ttl_seconds)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — fail-open é o contrato deste adapter
             logger.warning("cache.set_failed", key=key, error=str(exc))
 
     def delete(self, key: str) -> None:
         try:
             self._client.delete(key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — fail-open é o contrato deste adapter
             logger.warning("cache.delete_failed", key=key, error=str(exc))

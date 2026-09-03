@@ -1,7 +1,9 @@
 import pytest
 
 from app.adapters.outbound.circuit_breaker import (
-    CircuitBreaker, CircuitOpenError, CircuitState,
+    CircuitBreaker,
+    CircuitOpenError,
+    CircuitState,
 )
 
 
