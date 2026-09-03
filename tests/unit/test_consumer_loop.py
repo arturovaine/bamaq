@@ -93,6 +93,37 @@ def test_due_retry_is_processed_normally():
     assert consumer.paused == []
 
 
+class ErrorMsg(FakeMsg):
+    def error(self):
+        return "erro-kafka"
+
+
+def test_run_consumes_until_stop_and_closes():
+    loop, consumer, handler, _ = make_loop()
+    msg = FakeMsg()
+    script = iter([None, ErrorMsg(), msg])  # timeout, erro do broker, mensagem válida
+    sentinel = object()
+
+    consumer.subscribed, consumer.closed = None, False
+    consumer.subscribe = lambda topics: setattr(consumer, "subscribed", topics)
+    consumer.close = lambda: setattr(consumer, "closed", True)
+
+    def poll(timeout):
+        item = next(script, sentinel)
+        if item is sentinel:
+            loop.stop()
+            return None
+        return item
+
+    consumer.poll = poll
+    loop.run(["t", "t.retry"])
+
+    assert consumer.subscribed == ["t", "t.retry"]
+    assert len(handler.handled) == 1      # só a mensagem válida é processada
+    assert consumer.commits == [msg]
+    assert consumer.closed
+
+
 def test_partition_resumes_when_due():
     loop, consumer, _, clock = make_loop()
     msg = FakeMsg(headers=[(NOT_BEFORE_HEADER, str(clock.t + 60).encode())])
