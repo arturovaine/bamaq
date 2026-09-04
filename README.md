@@ -1,5 +1,16 @@
 # BAMAQ — Processamento Assíncrono de Transações
 
+![CI](https://github.com/arturovaine/bamaq/actions/workflows/ci.yml/badge.svg)
+![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)
+![Tests](https://img.shields.io/badge/tests-94%20passing-brightgreen)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00?logo=sqlalchemy&logoColor=white)
+![Kafka](https://img.shields.io/badge/Apache%20Kafka-3.9-231F20?logo=apachekafka&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker%20Compose-2496ED?logo=docker&logoColor=white)
+
 Aplicação que recebe transações financeiras via API REST, as persiste em MySQL e as
 processa de forma assíncrona via Kafka, consultando um serviço externo de análise de
 risco. Projetada para operação confiável: outbox transacional, idempotência,
