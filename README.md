@@ -261,9 +261,3 @@ de wiring, cobertos indiretamente pelos testes e2e.
 
 </details>
 
-<details>
-<summary><strong>Documentos do processo</strong></summary>
-
-
-
-</details>
